@@ -1,0 +1,175 @@
+---
+title: "preprocess_cnc_data"
+output: html_document
+date: "2023-11-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gt)
+library(readxl)
+
+```
+
+## R Markdown
+Read all csv files in folder ../data
+```{r}
+tool_insert = "wsp1030" #"wsp4240" #"wsp1030"
+data_path = paste('../data/', tool_insert, sep="")
+cnc_data <- list.files(data_path,pattern = "*.csv" )
+```
+
+
+Analyse data: resume currents, and use them to calculate the power
+```{r}
+# definition of parameters
+voltage = 230
+ap = 0.002
+diam = 0.04
+vf = 0.949/60
+ae = 0.75*diam
+vc = 265/1000
+revol_N = 2108  
+num_of_inserts_z = 3
+fz = 0.15/1000 
+sample_time = 0.002
+
+
+pathstr = paste("../data/", paste(tool_insert, "/", sep=""), sep="")
+fname = paste(pathstr,cnc_data[1], sep = "")
+tmp_cnc_data <- read.csv(fname)
+tmp_cnc_data$iqAx1 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..1.
+tmp_cnc_data$iqAx2 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..2.
+tmp_cnc_data$iqAx4 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..4.
+pow <- (mean(tmp_cnc_data$iqAx1) + mean(tmp_cnc_data$iqAx2) + mean(tmp_cnc_data$iqAx4))*voltage
+  pre_processed_cnc <- tmp_cnc_data %>% summarise(filename = cnc_data[1], 
+                                                  tool = tool_insert,
+                                                  cutting_depth_ap = ap, 
+                                                  tool_diameter_d = diam,
+                                                  diameter_ae = ae,
+                                                  feed_vel_f = vf,
+                                                  revol_N = revol_N, 
+                                                  num_of_inserts_z = num_of_inserts_z,
+                                                  feet_per_insert_fz = fz, 
+                                                  cut_vel_vc = vc,
+                                                  Power = pow,
+                                                  Energy= pow * tmp_cnc_data$time[nrow(tmp_cnc_data)],
+                                                  time = tmp_cnc_data$time[nrow(tmp_cnc_data)], 
+                                                  distance = vf*tmp_cnc_data$time[nrow(tmp_cnc_data)])
+```
+
+```{r}
+
+for (idx in 2:length(cnc_data)){
+  fname = paste(pathstr,cnc_data[idx], sep = "")
+  tmp_cnc_data <- read.csv(fname)
+  tmp_cnc_data$iqAx1 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..1.
+  tmp_cnc_data$iqAx2 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..2.
+  tmp_cnc_data$iqAx4 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..4.
+  pow <- (mean(tmp_cnc_data$iqAx1) + mean(tmp_cnc_data$iqAx2) + mean(tmp_cnc_data$iqAx4))*voltage
+  pre_processed_cnc_tmp <-  c(filename = cnc_data[idx], 
+                              tool = tool_insert,
+                              cutting_depth_ap = ap, 
+                              tool_diameter_d = diam,
+                              diameter_ae = ae,
+                              feed_vel_f = vf,
+                              revol_N = revol_N, 
+                              num_of_inserts_z = num_of_inserts_z,
+                              feet_per_insert_fz = fz, 
+                              cut_vel_vc = vc,
+                              Power = pow,
+                              Energy= pow * tmp_cnc_data$time[nrow(tmp_cnc_data)],
+                              time = tmp_cnc_data$time[nrow(tmp_cnc_data)], 
+                              distance = vf*tmp_cnc_data$time[nrow(tmp_cnc_data)])
+				
+  
+  pre_processed_cnc <- pre_processed_cnc %>%
+     rbind(pre_processed_cnc_tmp)
+}
+```
+
+
+```{r}
+results_filename <- paste('../preprocessed_data/preprocessed_cnc_data_', paste(tool_insert, '.csv', sep = ''), sep='')
+
+write.csv(pre_processed_cnc, results_filename, row.names=FALSE)
+```
+
+Analysing Cutopt data
+
+```{r}
+data_path = '../data/wsp1030_co/Cutopt_protocoll_wsp1030.xlsx'
+cutopt_data <- read_excel(data_path)
+```
+
+```{r}
+wsp_type <- 'wsp1030'
+
+pathstr <-"../data/wsp1030_co/"
+fname = paste(pathstr,cutopt_data$trace_file[1], sep = "")
+tmp_cnc_data <- read.csv(fname)
+tmp_cnc_data$iqAx1 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..1.
+tmp_cnc_data$iqAx2 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..2.
+tmp_cnc_data$iqAx4 =tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..4.
+
+pow <- (mean(tmp_cnc_data$iqAx1) + mean(tmp_cnc_data$iqAx2) + mean(tmp_cnc_data$iqAx4))*voltage
+  pre_processed_cnc <- tmp_cnc_data %>% summarise(filename = cutopt_data$trace_file[1], 
+                                                  tool = wsp_type,
+                                                  cutting_depth_ap = cutopt_data$`Ap (mm)`[1]/1000, 
+                                                  tool_diameter_d = cutopt_data$`R (mm)`[1]*2/1000,
+                                                  diameter_ae = cutopt_data$`Ae (mm)`[1]/1000,
+                                                  feed_vel_f = cutopt_data$`vf (mm/min)`[1]/1000*60,
+                                                  revol_N = cutopt_data$`N (rpm)`[1]/60, 
+                                                  num_of_inserts_z = cutopt_data$Z[1],
+                                                  feet_per_insert_fz = cutopt_data$`fz (mm)`[1]/1000, 
+                                                  cut_vel_vc = cutopt_data$`Vc (m/min)`[1]*60,
+                                                  Power = pow,
+                                                  Energy= pow * tmp_cnc_data$time[nrow(tmp_cnc_data)],
+                                                  time = tmp_cnc_data$time[nrow(tmp_cnc_data)], 
+                                                  distance = feed_vel_f*tmp_cnc_data$time[nrow(tmp_cnc_data)])
+
+
+```
+
+
+```{r}
+for (idx in 2:length(cutopt_data$trace_file)){
+  fname = paste(pathstr,cutopt_data$trace_file[idx], sep = "")
+  tmp_cnc_data <- read.csv(fname)
+  idx_na_ax1 <-is.na(tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..1.)
+  meanIqAx1 <- mean(tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..1.[idx_na_ax1 != 'TRUE'])
+  idx_na_ax2 <-is.na(tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..2.)
+  meanIqAx2 <- mean(tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..2.[idx_na_ax2 != 'TRUE'])
+  idx_na_ax4 <-is.na(tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..4.)
+  meanIqAx4 <- mean(tmp_cnc_data$X..Nck..SD.nckServoDataActCurr32..u1..4.[idx_na_ax4 != 'TRUE'])
+  pow <- (meanIqAx1 + meanIqAx2 + meanIqAx4)*voltage
+  feed_vel_f <- cutopt_data$`vf (mm/min)`[idx]/1000*60
+  process_time <- tmp_cnc_data$time[nrow(tmp_cnc_data)]
+  pre_processed_cnc_tmp <-  c(filename = cutopt_data$trace_file[idx], 
+                              tool = wsp_type,
+                              cutting_depth_ap = cutopt_data$`Ap (mm)`[idx]/1000, 
+                              tool_diameter_d = cutopt_data$`R (mm)`[idx]*2/1000,
+                              diameter_ae = cutopt_data$`Ae (mm)`[idx]/1000,
+                              feed_vel_f = feed_vel_f,
+                              revol_N = cutopt_data$`N (rpm)`[idx]/60, 
+                              num_of_inserts_z = cutopt_data$Z[idx],
+                              feet_per_insert_fz = cutopt_data$`fz (mm)`[idx]/1000, 
+                              cut_vel_vc = cutopt_data$`Vc (m/min)`[idx]*60,
+                              Power = pow,
+                              Energy= pow * process_time,
+                              time = process_time, 
+                              distance = feed_vel_f*process_time)
+				
+  
+  pre_processed_cnc <- pre_processed_cnc %>%
+     rbind(pre_processed_cnc_tmp)
+}
+
+```
+
+
+```{r}
+results_filename <- paste('../preprocessed_data/preprocessed_cnc_data_', paste(wsp_type, '_co.csv', sep = ''), sep='')
+write.csv(pre_processed_cnc, results_filename, row.names=FALSE)
+```
