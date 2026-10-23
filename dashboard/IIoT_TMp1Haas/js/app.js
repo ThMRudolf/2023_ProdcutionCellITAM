@@ -593,7 +593,7 @@ async function poll() {
   try {
     if (BACKEND_URL) {
       const ok = await fetchFromBackend();
-      if (ok) { renderUI(); renderProduction(); return; }
+      if (ok) { renderUI(); renderProduction(); logSnapshot(); return; }
     }
 
     const [docCurrent, docSample] = await Promise.all([
@@ -607,9 +607,95 @@ async function poll() {
       await fetchSensor();
       renderUI();
       renderProduction();
+      logSnapshot();
     }
   } catch (e) {
     console.error('Poll-Fehler:', e);
+  }
+}
+
+/* ==========================================================================
+   CSV-PROTOKOLLIERUNG
+   ==========================================================================
+   Nach jedem erfolgreichen Poll (1 s) wird ein flacher Schnappschuss aller
+   Tab-Werte per POST an cors_proxy.py (/log) gesendet. Der Proxy hängt ihn
+   als Zeile an Backend/logs/tmp1haas_YYYY-MM-DD.csv an.
+   ========================================================================== */
+
+/** Flacht den state-Zustand aller Tabs in ein Objekt mit fester Spaltenreihenfolge ab. */
+function buildLogRow() {
+  const s  = state.sensorSpindle;
+  const n  = v => (v === null || v === undefined || Number.isNaN(v)) ? '' : v;
+  return {
+    ts: new Date().toISOString(),
+
+    // ── Übersicht ──────────────────────────────────────────────────────────
+    spindleRPM:     n(state.spindleRPM),
+    toolNum:        n(state.toolNum),
+    station:        n(state.station),
+    spNum:          n(state.spNum),
+    maxPwr:         n(state.maxPwr),
+    ssovrd:         state.ssovrd,
+    fdovrd:         state.fdovrd,
+    cycleTime:      n(state.cycleTime),
+    spindleTime:    n(state.spindleTime),
+    machineRunTime: n(state.machineRunTime),
+    program:        state.program,
+    m30c:           n(state.m30c),
+    gcodes:         state.gcodes.join('|'),
+    activeAlarms:   state.activeAlarms,
+    xPos:           n(state.xPos),
+    yPos:           n(state.yPos),
+    zPos:           n(state.zPos),
+
+    // ── Achsleistung ───────────────────────────────────────────────────────
+    velX:  n(state.velX),
+    velY:  n(state.velY),
+    rovrd: state.rovrd,
+
+    // ── Stromsensor (gleiche Formeln wie updateSensorUI) ───────────────────
+    sensorSpindle: n(state.sensorSpindle),
+    sensorX:       n(state.sensorX),
+    sensorY:       n(state.sensorY),
+    powerEstW:     s != null ? Math.round(1.732 * 480 * s)           : '',
+    peakA:         s != null ? +(s * 1.414).toFixed(2)               : '',
+    loadPct:       s != null ? Math.min(100, Math.round(s / 30 * 100)) : '',
+
+    // ── Produktion (gleiche Formeln wie renderProduction) ──────────────────
+    spindleUtilPct: state.machineRunTime > 0
+      ? +Math.min(100, state.spindleTime / state.machineRunTime * 100).toFixed(1) : '',
+    lastCycle:      n(state.lastCycle),
+    m30c2:          n(state.m30c2),
+    controllerMode: state.controllerMode,
+    activeWCS:      state.activeWCS ?? '',
+    coolant_tsc:    state.coolant.tsc,
+    coolant_hpc:    state.coolant.hpc,
+    coolant_spigot: state.coolant.spigot,
+    coolant_shower: state.coolant.shower,
+    coolant_mist:   state.coolant.mist,
+    coolant_mql:    state.coolant.mql,
+    coolant_tab:    state.coolant.tab,
+    thermal_time:   state.thermal.time,
+    thermal_x:      state.thermal.x,
+    thermal_y:      state.thermal.y,
+    thermal_z:      state.thermal.z,
+    workOffsets:    Object.entries(state.workOffsets).map(([g, v]) => `${g}:${v.join('/')}`).join(';'),
+    toolLib:        state.toolLib.map(t => `T${t.t}:${t.diam}/${t.len}/${t.lWear}/${t.dWear}`).join(';'),
+  };
+}
+
+/** Sendet einen Schnappschuss an den Proxy; Fehler blockieren den Poll-Loop nie. */
+async function logSnapshot() {
+  if (!PROXY_URL) return;
+  try {
+    await fetch(`${PROXY_URL}/log`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(buildLogRow()),
+      signal:  AbortSignal.timeout(2000),
+    });
+  } catch (e) {
+    console.warn('logSnapshot →', e.message);
   }
 }
 

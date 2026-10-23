@@ -49,14 +49,18 @@ KEIN PIP-INSTALL NOTWENDIG — nur Python-Standardbibliotheken.
 """
 
 import argparse
+import csv
 import http.server
+import json
 import logging
 import mimetypes
 import os
 import socketserver
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
 
@@ -79,7 +83,36 @@ CFG = {
     "mtc_port":  8082,    # MTConnect-Agent Port
     "timeout":   5,       # Timeout für Anfragen an den Agent (Sekunden)
     "serve_dir": None,    # Verzeichnis mit HTML-Dateien (wird beim Start gesetzt)
+    "log_dir":   None,    # Verzeichnis für Tages-CSV-Dateien (wird beim Start gesetzt)
 }
+
+# ---------------------------------------------------------------------------
+# CSV-Protokollierung — eine Datei pro Tag, eine Zeile pro POST /log
+# ---------------------------------------------------------------------------
+_csv_lock    = threading.Lock()
+_csv_headers = {}   # { Dateipfad: [Spaltennamen] } — Spaltenreihenfolge pro Datei stabil halten
+
+
+def append_csv_row(row):
+    """Hängt eine Zeile an Backend/logs/tmp1haas_YYYY-MM-DD.csv an (Header bei neuer Datei)."""
+    path = Path(CFG["log_dir"]) / f"tmp1haas_{datetime.now():%Y-%m-%d}.csv"
+    with _csv_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        header = _csv_headers.get(path)
+        is_new = not path.exists() or path.stat().st_size == 0
+        if header is None:
+            if is_new:
+                header = list(row.keys())
+            else:
+                # Bestehende Datei (z.B. nach Neustart) → vorhandenen Header übernehmen
+                with path.open(newline="", encoding="utf-8") as f:
+                    header = next(csv.reader(f), None) or list(row.keys())
+            _csv_headers[path] = header
+        with path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
+            if is_new:
+                writer.writeheader()
+            writer.writerow(row)
 
 # ---------------------------------------------------------------------------
 # MIME-Typen registrieren
@@ -133,6 +166,42 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._handle_proxy(parsed)
         else:
             self._handle_static(parsed)
+
+    def do_POST(self):
+        """POST /log → Dashboard-Schnappschuss als CSV-Zeile speichern."""
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/log":
+            self._handle_log()
+        else:
+            self._send_text(404, "text/plain", f"404 Not Found: {parsed.path}".encode())
+
+    # ── CSV-Protokollierung ──────────────────────────────────────────────────
+
+    def _handle_log(self):
+        """Liest den JSON-Schnappschuss aus app.js und hängt ihn an die Tages-CSV an."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data   = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError("JSON-Objekt erwartet")
+        except (ValueError, json.JSONDecodeError) as e:
+            self._send_text(400, "text/plain", f"Ungültiges JSON: {e}".encode())
+            return
+
+        row = {"server_ts": datetime.now().isoformat(timespec="milliseconds"), **data}
+        try:
+            append_csv_row(row)
+        except OSError as e:
+            log.error("CSV-Fehler: %s", e)
+            self._send_text(500, "text/plain", str(e).encode())
+            return
+
+        try:
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self._cors_headers()
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
 
     # ── MTConnect-Proxy ──────────────────────────────────────────────────────
 
@@ -254,7 +323,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def _cors_headers(self):
         """Setzt alle für CORS notwendigen Antwort-Header."""
         self.send_header("Access-Control-Allow-Origin",  "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
 
     def _xml_error(self, code, message):
@@ -333,6 +402,8 @@ Optionen:
                         help="Port des MTConnect-Agents (Standard: 8082)")
     parser.add_argument("--dir",      default=None,
                         help="Verzeichnis mit den Dashboard-Dateien (Standard: aktuelles Verzeichnis)")
+    parser.add_argument("--log-dir",  default=None,
+                        help="Verzeichnis für die Tages-CSV-Dateien (Standard: Backend/logs)")
     args = parser.parse_args()
 
     CFG["port"]     = args.port
@@ -387,6 +458,7 @@ Optionen:
         serve_dir = script_dir
 
     CFG["serve_dir"] = serve_dir
+    CFG["log_dir"]   = args.log_dir or os.path.join(script_dir, "logs")
 
     # index.html Pfad für Healthcheck-Log ermitteln
     if Path(serve_dir, "index.html").exists():
@@ -405,6 +477,7 @@ Optionen:
     else:
         log.info("  MTConnect      : Agent-IP im Dashboard-Modal eingeben")
     log.info("  Projekt-Root   : %s", CFG["serve_dir"])
+    log.info("  CSV-Protokoll  : %s", CFG["log_dir"])
     log.info("=" * 58)
 
     with ReusingTCPServer(("", CFG["port"]), DashboardHandler) as server:
